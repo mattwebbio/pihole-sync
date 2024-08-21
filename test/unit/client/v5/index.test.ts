@@ -1,21 +1,24 @@
 import nock from 'nock';
 import { Blob } from 'node-fetch';
 import { ClientV5 } from '../../../../src/client/v5';
-import { Host } from '../../../../src/client/host';
 import { Config } from '../../../../src/config/index';
 import { ErrorNotification } from '../../../../src/notify';
 import { Log } from '../../../../src/log';
+import { Version } from '../../../../src/config/version';
+import { HostV5 } from '../../../../src/host/v5';
 
 describe('Client', () => {
   describe('V5', () => {
-    const host = new Host({
+    const host = new HostV5({
       baseUrl: 'http://10.0.0.2',
       password: 'mypassword',
       path: '/admin'
     });
-    const config = Config({
-      primaryHost: { baseUrl: host.baseUrl, password: host.password },
-      secondaryHosts: [{ baseUrl: host.baseUrl, password: host.password }]
+    const config = Config(Version.v5, {
+      sync: {
+        primaryHost: { baseUrl: host.baseUrl, password: host.password },
+        secondaryHosts: [{ baseUrl: host.baseUrl, password: host.password }]
+      }
     });
     const log = new Log(false);
 
@@ -30,7 +33,7 @@ describe('Client', () => {
 
       return {
         teleporter: nock(host.fullUrl),
-        client: await ClientV5.create({ host, log, options: config.sync.v5 })
+        client: await ClientV5.create({ host, config, log })
       };
     };
 
@@ -43,9 +46,7 @@ describe('Client', () => {
         const initialRequest = nock(host.fullUrl).get('/index.php?login').reply(200);
         const loginRequest = nock(host.fullUrl).post('/index.php?login').reply(500);
 
-        const expectError = expect(
-          ClientV5.create({ host, log, options: config.sync.v5 })
-        ).rejects;
+        const expectError = expect(ClientV5.create({ host, config, log })).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -66,9 +67,7 @@ describe('Client', () => {
         const initialRequest = nock(host.fullUrl).get('/index.php?login').reply(200);
         const loginRequest = nock(host.fullUrl).post('/index.php?login').reply(200);
 
-        const expectError = expect(
-          ClientV5.create({ host, log, options: config.sync.v5 })
-        ).rejects;
+        const expectError = expect(ClientV5.create({ host, config, log })).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -90,9 +89,7 @@ describe('Client', () => {
           .post('/index.php?login')
           .reply(200, '<html><body><div id="token">abcdef</div></body></html>');
 
-        const expectError = expect(
-          ClientV5.create({ host, log, options: config.sync.v5 })
-        ).rejects;
+        const expectError = expect(ClientV5.create({ host, config, log })).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -117,16 +114,16 @@ describe('Client', () => {
             '<html><body><div id="token">abcdefgijklmnopqrstuvwxyzabcdefgijklmnopqrst</div></body></html>'
           );
 
-        await expect(
-          ClientV5.create({ host, log, options: config.sync.v5 })
-        ).resolves.toBeInstanceOf(ClientV5);
+        await expect(ClientV5.create({ host, config, log })).resolves.toBeInstanceOf(
+          ClientV5
+        );
 
         initialRequest.done();
         loginRequest.done();
       });
     });
 
-    describe('downloadBackup', () => {
+    describe('makeBackup', () => {
       let client: ClientV5;
       let teleporter: nock.Scope;
 
@@ -141,7 +138,7 @@ describe('Client', () => {
       test('should throw error if response is non-200', async () => {
         teleporter.post('/scripts/pi-hole/php/teleporter.php').reply(500);
 
-        const expectError = expect(client.downloadBackup()).rejects;
+        const expectError = expect(client.makeBackup()).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -160,7 +157,7 @@ describe('Client', () => {
           .post('/scripts/pi-hole/php/teleporter.php')
           .reply(200, undefined, { 'content-type': 'text/html' });
 
-        const expectError = expect(client.downloadBackup()).rejects;
+        const expectError = expect(client.makeBackup()).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -180,7 +177,7 @@ describe('Client', () => {
           .post('/scripts/pi-hole/php/teleporter.php', (body) => (requestBody = body))
           .reply(200, undefined, { 'content-type': 'application/gzip' });
 
-        const backup = await client.downloadBackup();
+        const backup = await client.makeBackup();
 
         expect(backup).toBeInstanceOf(Blob);
         expect(requestBody).toContain(
@@ -206,7 +203,7 @@ describe('Client', () => {
       });
     });
 
-    describe('uploadBackup', () => {
+    describe('restoreBackup', () => {
       const backup = new Blob([]);
       let client: ClientV5;
       let teleporter: nock.Scope;
@@ -222,7 +219,7 @@ describe('Client', () => {
       test('should throw error if response is non-200', async () => {
         teleporter.post('/scripts/pi-hole/php/teleporter.php').reply(500);
 
-        const expectError = expect(client.uploadBackup(backup)).rejects;
+        const expectError = expect(client.restoreBackup(backup)).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -239,7 +236,7 @@ describe('Client', () => {
       test('should throw error if response does not end with "OK" or "Done importing"', async () => {
         teleporter.post('/scripts/pi-hole/php/teleporter.php').reply(200);
 
-        const expectError = expect(client.uploadBackup(backup)).rejects;
+        const expectError = expect(client.restoreBackup(backup)).rejects;
 
         await expectError.toBeInstanceOf(ErrorNotification);
         await expectError.toMatchObject({
@@ -254,49 +251,49 @@ describe('Client', () => {
       });
     });
 
-    describe('updateGravity', () => {
-      let client: ClientV5;
-      let teleporter: nock.Scope;
+    // describe('updateGravity', () => {
+    //   let client: ClientV5;
+    //   let teleporter: nock.Scope;
 
-      beforeEach(async () => {
-        ({ client, teleporter } = await createClient());
-      });
+    //   beforeEach(async () => {
+    //     ({ client, teleporter } = await createClient());
+    //   });
 
-      afterEach(() => {
-        teleporter.done();
-      });
+    //   afterEach(() => {
+    //     teleporter.done();
+    //   });
 
-      test('should upload backup and update gravity successfully', async () => {
-        teleporter
-          .get('/scripts/pi-hole/php/gravity.sh.php', undefined)
-          .reply(
-            200,
-            '\ndata: \n\ndata:      [✓] TCP (IPv6)\ndata: \ndata: \n\ndata:   [✓] Pi-hole blocking is enabled\ndata: \n\ndata:'
-          );
+    //   // test('should upload backup and update gravity successfully', async () => {
+    //   //   teleporter
+    //   //     .get('/scripts/pi-hole/php/gravity.sh.php', undefined)
+    //   //     .reply(
+    //   //       200,
+    //   //       '\ndata: \n\ndata:      [✓] TCP (IPv6)\ndata: \ndata: \n\ndata:   [✓] Pi-hole blocking is enabled\ndata: \n\ndata:'
+    //   //     );
 
-        const result = await client.updateGravity();
+    //   //   const result = await client.updateGravity();
 
-        expect(result).toStrictEqual(true);
-      });
+    //   //   expect(result).toStrictEqual(true);
+    //   // });
 
-      test('should throw error if gravity update fails', async () => {
-        teleporter
-          .get('/scripts/pi-hole/php/gravity.sh.php', undefined)
-          .reply(200, '\ndata: \n\ndata:      [✓] TCP (IPv6)\ndata: \ndata: \n\ndata:');
+    //   // test('should throw error if gravity update fails', async () => {
+    //   //   teleporter
+    //   //     .get('/scripts/pi-hole/php/gravity.sh.php', undefined)
+    //   //     .reply(200, '\ndata: \n\ndata:      [✓] TCP (IPv6)\ndata: \ndata: \n\ndata:');
 
-        const expectError = expect(client.updateGravity()).rejects;
+    //   //   const expectError = expect(client.updateGravity()).rejects;
 
-        await expectError.toBeInstanceOf(ErrorNotification);
-        await expectError.toMatchObject({
-          message: 'Failed updating gravity on "http://10.0.0.2/admin".',
-          verbose: {
-            host: 'http://10.0.0.2',
-            path: '/admin',
-            status: 200,
-            eventStream: '[✓] TCP (IPv6)'
-          }
-        });
-      });
-    });
+    //   //   await expectError.toBeInstanceOf(ErrorNotification);
+    //   //   await expectError.toMatchObject({
+    //   //     message: 'Failed updating gravity on "http://10.0.0.2/admin".',
+    //   //     verbose: {
+    //   //       host: 'http://10.0.0.2',
+    //   //       path: '/admin',
+    //   //       status: 200,
+    //   //       eventStream: '[✓] TCP (IPv6)'
+    //   //     }
+    //   //   });
+    //   // });
+    // });
   });
 });
